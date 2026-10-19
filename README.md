@@ -25,6 +25,16 @@ A private personal library for photos, videos, PDFs and saved social links. The 
 
 The root `.env.example` is a template only. Do not commit real `.env` files. Do not put MongoDB or Cloudinary secrets in any `VITE_*` variable; Vite variables are public in the built client.
 
+## Install LOKI VAULT as an app
+
+The client is a Progressive Web App. After the frontend is served over HTTPS, supported browsers can install it from the browser's install control; Chrome and Edge show an **Install LOKI VAULT** button when their install prompt is available. On iPhone/iPad, open the site in Safari, use **Share**, then **Add to Home Screen**. Android and desktop installations use the icons and standalone display settings in `client/public/manifest.webmanifest`.
+
+The service worker caches the app shell and same-origin versioned frontend assets only. It explicitly skips `/api/` and upload paths; private API data, authentication responses, Cloudinary media and session tokens are never placed in the service-worker cache. Offline mode can open the app shell and shows an offline message, while private library actions require a network connection. No private writes are queued for later replay.
+
+For a local production build, set `VITE_API_URL` in `client/.env` to the backend origin, then run `npm --prefix client install` and `npm --prefix client run build`. The deployable static app is written to `client/dist`; serve it over HTTPS for installation and service-worker support. Use `npm run dev` for local development.
+
+The downloadable project source archive should include `client`, `server`, root configuration, lockfiles and this README. It must exclude `.git`, all `node_modules` directories, build caches and real `.env` files. `.env.example` contains placeholders only.
+
 ## Deploy to Render
 
 Push this repository to GitHub, then create two Render services from the same repository.
