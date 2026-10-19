@@ -43,6 +43,7 @@ Push this repository to GitHub, then create two Render services from the same re
   - `JWT_SECRET` — long, unique random value.
   - `CLIENT_ORIGIN` — the exact deployed frontend origin, for example `https://loki-vault-web.onrender.com` (no trailing slash).
   - `COOKIE_SECURE=true`
+  - `COOKIE_SAMESITE=none` — needed because the Render frontend and API use different `onrender.com` hostnames.
 
 The API reads Render's `PORT` automatically. If you use a custom frontend domain, set `CLIENT_ORIGIN` to that origin and redeploy the API.
 

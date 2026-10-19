@@ -14,7 +14,15 @@ import { z } from 'zod';
 const app = express();
 app.set('trust proxy', 1);
 app.use(helmet());
-app.use(cors({ origin: (process.env.CLIENT_ORIGIN || 'http://localhost:5173').split(',').map(x => x.trim()), credentials: true }));
+const allowedOrigins = (process.env.CLIENT_ORIGIN || 'http://localhost:5173').split(',').map(x => x.trim());
+app.use(cors({ origin: allowedOrigins, credentials: true }));
+app.use((req, res, next) => {
+  if (!['GET', 'HEAD', 'OPTIONS'].includes(req.method)) {
+    const origin = req.get('Origin');
+    if (origin && !allowedOrigins.includes(origin)) return res.status(403).json({ error: 'Request origin is not allowed.' });
+  }
+  next();
+});
 app.use(express.json({ limit: '1mb' })); app.use(cookieParser());
 const authLimit = rateLimit({ windowMs: 15 * 60 * 1000, limit: 30, standardHeaders: true, legacyHeaders: false });
 const uploadLimit = rateLimit({ windowMs: 60 * 60 * 1000, limit: 60, standardHeaders: true, legacyHeaders: false });
@@ -26,7 +34,7 @@ Asset.schema.index({ ownerId: 1, createdAt: -1 }); Asset.schema.index({ ownerId:
 const Collection = mongoose.model('Collection', new mongoose.Schema({ ownerId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true }, name: { type: String, required: true }, description: String, coverAssetId: mongoose.Schema.Types.ObjectId }, { timestamps: true }));
 const SocialReference = mongoose.model('SocialReference', new mongoose.Schema({ ownerId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true }, platform: String, url: { type: String, required: true }, title: String, notes: String, tags: [String], category: String }, { timestamps: true }));
 
-const cookieOptions = () => ({ httpOnly: true, secure: process.env.COOKIE_SECURE === 'true' || process.env.NODE_ENV === 'production', sameSite: process.env.COOKIE_SAMESITE || 'lax', maxAge: 7 * 24 * 60 * 60 * 1000, path: '/' });
+const cookieOptions = () => ({ httpOnly: true, secure: process.env.COOKIE_SECURE === 'true' || process.env.NODE_ENV === 'production', sameSite: process.env.COOKIE_SAMESITE || (process.env.NODE_ENV === 'production' ? 'none' : 'lax'), maxAge: 7 * 24 * 60 * 60 * 1000, path: '/' });
 const tokenFor = user => jwt.sign({ sub: user.id }, process.env.JWT_SECRET, { expiresIn: '7d' });
 const protect = async (req, res, next) => { try { const token = req.cookies.vault_session || (req.headers.authorization || '').replace(/^Bearer /, ''); if (!token) return res.status(401).json({ error: 'Please sign in.' }); const payload = jwt.verify(token, process.env.JWT_SECRET); req.user = await User.findById(payload.sub).select('_id name email'); if (!req.user) return res.status(401).json({ error: 'Session expired.' }); next(); } catch { res.status(401).json({ error: 'Session expired. Please sign in again.' }); } };
 const withPrivateUrl = asset => { const item = asset.toObject ? asset.toObject() : { ...asset }; delete item.secureUrl; const ext = (item.originalFileName || '').split('.').pop()?.toLowerCase() || (item.resourceType === 'image' ? 'jpg' : item.resourceType === 'video' ? 'mp4' : 'pdf'); item.accessUrl = cloudinary.utils.private_download_url(item.cloudinaryPublicId, ext, { resource_type: item.resourceType, type: 'authenticated', expires_at: Math.floor(Date.now() / 1000) + 15 * 60 }); return item; };
