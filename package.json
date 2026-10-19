@@ -1,0 +1,7 @@
+{
+  "name": "loki-vault",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": { "dev": "concurrently -k \"npm:dev:server\" \"npm:dev:web\"", "dev:server": "npm --prefix server run dev", "dev:web": "npm --prefix client run dev", "build": "npm --prefix client run build", "start": "npm --prefix server start" },
+  "devDependencies": { "concurrently": "^9.1.2" }
+}
