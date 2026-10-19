@@ -1,6 +1,6 @@
 # LOKI VAULT
 
-A private personal library for photos, videos, PDFs and saved web references. The repository contains a Vite/React client and an Express/Mongoose API. Uploaded files go straight through the authenticated API to Cloudinary as `authenticated` assets; MongoDB stores metadata only. Private file URLs are minted after authentication and expire after 15 minutes.
+A private personal library for photos, videos, PDFs and saved social links. The repository contains a Vite/React/Tailwind client and an Express/Mongoose API. Uploaded files go straight through the authenticated API to Cloudinary as `authenticated` assets; MongoDB stores metadata only. Private file URLs are minted after authentication and expire after 15 minutes. Sign-in cookies persist for 30 days, and the last visited section is remembered in that browser per account.
 
 ## Prerequisites
 
@@ -70,10 +70,10 @@ Set `CLOUDINARY_URL` only on the API service. The API uploads media using Cloudi
 - `GET /api/dashboard`
 - `GET /api/assets`, `POST /api/assets/upload`, `PATCH /api/assets/:id`, `DELETE /api/assets/:id`, `POST /api/assets/:id/restore`
 - `GET /api/collections`, `POST /api/collections`
-- `GET /api/references`, `POST /api/references`
+- `GET /api/references`, `POST /api/references`, `PATCH /api/references/:id`, `DELETE /api/references/:id`
 - `GET /api/health`
 
-All library, collection and reference routes require the httpOnly session cookie. Accounts are private and have no sharing feature. Trash is a soft-delete area and files can be restored; permanent purge and password recovery are not implemented. Upload selection shows an uploading state but browser-side progress and cancellation are not implemented. Social references save links and notes; they do not download third-party content.
+All library, collection and reference routes require the httpOnly session cookie. Accounts are private and have no sharing feature. Trash is a soft-delete area and files can be restored; permanent purge and password recovery are not implemented. Uploads show transfer progress and support drag-and-drop on desktop. Social links support custom platform names, automatic common-platform detection, categories, notes, tags, favorites, search, editing and deletion; they do not download third-party content.
 
 ## Release checklist
 
@@ -83,6 +83,8 @@ All library, collection and reference routes require the httpOnly session cookie
 - [ ] Confirm an authenticated file can be previewed and its temporary link expires.
 - [ ] Favorite a file, move it to trash, and restore it.
 - [ ] Add a collection and a social reference; confirm dashboard counts update.
+- [ ] Add links from YouTube, Instagram, X, Pinterest, WhatsApp and a custom domain; verify platform detection, edit, favorite, delete, search, filters and pagination.
+- [ ] Sign in, visit a different section, close/reopen the browser during the 30-day session, and confirm the account and last section are restored.
 - [ ] Confirm production CORS origin, secure cookies, health check, and both deployed services.
 - [ ] Confirm secrets exist only in Render environment settings and are absent from Git history.
 
