@@ -10,6 +10,7 @@ import jwt from 'jsonwebtoken';
 import multer from 'multer';
 import { v2 as cloudinary } from 'cloudinary';
 import { z } from 'zod';
+import { Readable } from 'node:stream';
 
 const app = express();
 app.set('trust proxy', 1);
@@ -42,6 +43,31 @@ const tokenFor = user => jwt.sign({ sub: user.id }, process.env.JWT_SECRET, { ex
 const protect = async (req, res, next) => { try { const token = req.cookies.vault_session || (req.headers.authorization || '').replace(/^Bearer /, ''); if (!token) return res.status(401).json({ error: 'Please sign in.' }); const payload = jwt.verify(token, process.env.JWT_SECRET); req.user = await User.findById(payload.sub).select('_id name email'); if (!req.user) return res.status(401).json({ error: 'Session expired.' }); next(); } catch { res.status(401).json({ error: 'Session expired. Please sign in again.' }); } };
 const withPrivateUrl = asset => { const item = asset.toObject ? asset.toObject() : { ...asset }; delete item.secureUrl; const ext = (item.originalFileName || '').split('.').pop()?.toLowerCase() || (item.resourceType === 'image' ? 'jpg' : item.resourceType === 'video' ? 'mp4' : 'pdf'); item.accessUrl = cloudinary.utils.private_download_url(item.cloudinaryPublicId, ext, { resource_type: item.resourceType, type: 'authenticated', expires_at: Math.floor(Date.now() / 1000) + 15 * 60 }); return item; };
 app.get('/api/health', (_req, res) => res.json({ ok: true, database: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected' }));
+app.get('/api/assets/:id/download', protect, async (req, res, next) => {
+  try {
+    const asset = await Asset.findOne({ _id: req.params.id, ownerId: req.user._id, deletedAt: null }).select('cloudinaryPublicId resourceType originalFileName mimeType');
+    if (!asset) return res.status(404).json({ error: 'File not found.' });
+    if (!process.env.CLOUDINARY_URL) return res.status(503).json({ error: 'Cloud storage is not configured yet.' });
+    const ext = asset.originalFileName?.match(/\.([a-zA-Z0-9]{1,10})$/)?.[1]?.toLowerCase() || 'bin';
+    const downloadUrl = cloudinary.utils.private_download_url(asset.cloudinaryPublicId, ext, {
+      resource_type: asset.resourceType,
+      type: 'authenticated',
+      expires_at: Math.floor(Date.now() / 1000) + 60,
+    });
+    const upstream = await fetch(downloadUrl);
+    if (!upstream.ok || !upstream.body) {
+      await upstream.body?.cancel().catch(() => {});
+      return res.status(502).json({ error: 'The file could not be downloaded from storage.' });
+    }
+    const filename = (asset.originalFileName || 'download').replace(/[\/\\\r\n\0]/g, '_');
+    const fallback = filename.replace(/[^\x20-\x7E]/g, '_').replace(/["\\]/g, '_');
+    res.setHeader('Content-Type', asset.mimeType || upstream.headers.get('content-type') || 'application/octet-stream');
+    res.setHeader('Content-Disposition', `attachment; filename="${fallback}"; filename*=UTF-8''${encodeURIComponent(filename)}`);
+    const length = upstream.headers.get('content-length');
+    if (length) res.setHeader('Content-Length', length);
+    Readable.fromWeb(upstream.body).on('error', error => res.destroy(error)).pipe(res);
+  } catch (e) { next(e); }
+});
 app.post('/api/auth/register', authLimit, async (req, res, next) => { try { const data = z.object({ name: z.string().trim().min(2).max(80), email: z.string().email().max(254), password: z.string().min(10).max(128) }).parse(req.body); const user = await User.create({ ...data, passwordHash: await bcrypt.hash(data.password, 12) }); res.cookie('vault_session', tokenFor(user), cookieOptions()).status(201).json({ user: { id: user.id, name: user.name, email: user.email } }); } catch (e) { if (e.code === 11000) return res.status(409).json({ error: 'An account with this email already exists.' }); next(e); } });
 app.post('/api/auth/login', authLimit, async (req, res, next) => { try { const { email, password } = z.object({ email: z.string().email(), password: z.string().min(1).max(128) }).parse(req.body); const user = await User.findOne({ email: email.toLowerCase() }); if (!user || !(await bcrypt.compare(password, user.passwordHash))) return res.status(401).json({ error: 'Email or password is incorrect.' }); res.cookie('vault_session', tokenFor(user), cookieOptions()).json({ user: { id: user.id, name: user.name, email: user.email } }); } catch (e) { next(e); } });
 app.post('/api/auth/logout', (_req, res) => res.clearCookie('vault_session', { ...cookieOptions(), maxAge: undefined }).json({ ok: true }));
