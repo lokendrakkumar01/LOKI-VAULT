@@ -56,9 +56,21 @@ const protect = async (req, res, next) => {
 };
 const withPrivateUrl = asset => { const item = asset.toObject ? asset.toObject() : { ...asset }; delete item.secureUrl; const ext = (item.originalFileName || '').split('.').pop()?.toLowerCase() || (item.resourceType === 'image' ? 'jpg' : item.resourceType === 'video' ? 'mp4' : 'pdf'); item.accessUrl = cloudinary.utils.private_download_url(item.cloudinaryPublicId, ext, { resource_type: item.resourceType, type: 'authenticated', expires_at: Math.floor(Date.now() / 1000) + 15 * 60 }); return item; };
 app.get('/api/health', (_req, res) => res.json({ ok: true, database: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected' }));
-app.get('/api/assets/:id/download', protect, async (req, res, next) => {
+app.post('/api/assets/:id/download-ticket', protect, async (req, res, next) => {
   try {
-    const asset = await Asset.findOne({ _id: req.params.id, ownerId: req.user._id }).select('cloudinaryPublicId resourceType originalFileName mimeType');
+    const asset = await Asset.findOne({ _id: req.params.id, ownerId: req.user._id });
+    if (!asset) return res.status(404).json({ error: 'File not found.' });
+    const ticket = jwt.sign({ purpose: 'asset-download', assetId: asset.id, sub: String(req.user._id) }, process.env.JWT_SECRET, { expiresIn: '2m' });
+    res.set('Cache-Control', 'no-store').json({ path: `/api/assets/${asset.id}/download?ticket=${encodeURIComponent(ticket)}` });
+  } catch (e) { next(e); }
+});
+app.get('/api/assets/:id/download', async (req, res, next) => {
+  try {
+    let ticket;
+    try { ticket = jwt.verify(String(req.query.ticket || ''), process.env.JWT_SECRET); }
+    catch { return res.status(401).json({ error: 'Download link expired. Please tap download again.' }); }
+    if (ticket.purpose !== 'asset-download' || ticket.assetId !== req.params.id || !mongoose.isValidObjectId(ticket.sub)) return res.status(401).json({ error: 'Invalid download link.' });
+    const asset = await Asset.findOne({ _id: req.params.id, ownerId: ticket.sub }).select('cloudinaryPublicId resourceType originalFileName mimeType');
     if (!asset) return res.status(404).json({ error: 'File not found.' });
     if (!process.env.CLOUDINARY_URL) return res.status(503).json({ error: 'Cloud storage is not configured yet.' });
     const ext = asset.originalFileName?.match(/\.([a-zA-Z0-9]{1,10})$/)?.[1]?.toLowerCase() || 'bin';
