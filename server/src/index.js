@@ -11,6 +11,7 @@ import multer from 'multer';
 import { v2 as cloudinary } from 'cloudinary';
 import { z } from 'zod';
 import { Readable } from 'node:stream';
+import { validUploadContent } from './upload-validation.js';
 
 const app = express();
 app.set('trust proxy', 1);
@@ -25,6 +26,7 @@ app.use((req, res, next) => {
   next();
 });
 app.use(express.json({ limit: '1mb' })); app.use(cookieParser());
+app.use('/api', (_req, res, next) => { res.set('Cache-Control', 'no-store'); next(); });
 const authLimit = rateLimit({ windowMs: 15 * 60 * 1000, limit: 30, standardHeaders: true, legacyHeaders: false });
 const uploadLimit = rateLimit({ windowMs: 60 * 60 * 1000, limit: 60, standardHeaders: true, legacyHeaders: false });
 cloudinary.config({ secure: true });
@@ -40,12 +42,23 @@ SocialReference.schema.index({ ownerId: 1, platform: 1, category: 1, updatedAt: 
 const SESSION_DAYS = 30;
 const cookieOptions = () => ({ httpOnly: true, secure: process.env.COOKIE_SECURE === 'true' || process.env.NODE_ENV === 'production', sameSite: process.env.COOKIE_SAMESITE || (process.env.NODE_ENV === 'production' ? 'none' : 'lax'), maxAge: SESSION_DAYS * 24 * 60 * 60 * 1000, path: '/' });
 const tokenFor = user => jwt.sign({ sub: user.id }, process.env.JWT_SECRET, { expiresIn: `${SESSION_DAYS}d` });
-const protect = async (req, res, next) => { try { const token = req.cookies.vault_session || (req.headers.authorization || '').replace(/^Bearer /, ''); if (!token) return res.status(401).json({ error: 'Please sign in.' }); const payload = jwt.verify(token, process.env.JWT_SECRET); req.user = await User.findById(payload.sub).select('_id name email'); if (!req.user) return res.status(401).json({ error: 'Session expired.' }); next(); } catch { res.status(401).json({ error: 'Session expired. Please sign in again.' }); } };
+const protect = async (req, res, next) => {
+  const token = req.cookies.vault_session || (req.headers.authorization || '').replace(/^Bearer /, '');
+  if (!token) return res.status(401).json({ error: 'Please sign in.' });
+  let payload;
+  try { payload = jwt.verify(token, process.env.JWT_SECRET); }
+  catch { return res.status(401).json({ error: 'Session expired. Please sign in again.' }); }
+  try {
+    req.user = await User.findById(payload.sub).select('_id name email');
+    if (!req.user) return res.status(401).json({ error: 'Session expired.' });
+    return next();
+  } catch (error) { return next(error); }
+};
 const withPrivateUrl = asset => { const item = asset.toObject ? asset.toObject() : { ...asset }; delete item.secureUrl; const ext = (item.originalFileName || '').split('.').pop()?.toLowerCase() || (item.resourceType === 'image' ? 'jpg' : item.resourceType === 'video' ? 'mp4' : 'pdf'); item.accessUrl = cloudinary.utils.private_download_url(item.cloudinaryPublicId, ext, { resource_type: item.resourceType, type: 'authenticated', expires_at: Math.floor(Date.now() / 1000) + 15 * 60 }); return item; };
 app.get('/api/health', (_req, res) => res.json({ ok: true, database: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected' }));
 app.get('/api/assets/:id/download', protect, async (req, res, next) => {
   try {
-    const asset = await Asset.findOne({ _id: req.params.id, ownerId: req.user._id, deletedAt: null }).select('cloudinaryPublicId resourceType originalFileName mimeType');
+    const asset = await Asset.findOne({ _id: req.params.id, ownerId: req.user._id }).select('cloudinaryPublicId resourceType originalFileName mimeType');
     if (!asset) return res.status(404).json({ error: 'File not found.' });
     if (!process.env.CLOUDINARY_URL) return res.status(503).json({ error: 'Cloud storage is not configured yet.' });
     const ext = asset.originalFileName?.match(/\.([a-zA-Z0-9]{1,10})$/)?.[1]?.toLowerCase() || 'bin';
@@ -68,14 +81,21 @@ app.get('/api/assets/:id/download', protect, async (req, res, next) => {
     Readable.fromWeb(upstream.body).on('error', error => res.destroy(error)).pipe(res);
   } catch (e) { next(e); }
 });
+app.get('/api/assets/:id/access', protect, async (req, res, next) => {
+  try {
+    const asset = await Asset.findOne({ _id: req.params.id, ownerId: req.user._id });
+    if (!asset) return res.status(404).json({ error: 'File not found.' });
+    res.set('Cache-Control', 'no-store').json({ accessUrl: withPrivateUrl(asset).accessUrl });
+  } catch (e) { next(e); }
+});
 app.post('/api/auth/register', authLimit, async (req, res, next) => { try { const data = z.object({ name: z.string().trim().min(2).max(80), email: z.string().email().max(254), password: z.string().min(10).max(128) }).parse(req.body); const user = await User.create({ ...data, passwordHash: await bcrypt.hash(data.password, 12) }); res.cookie('vault_session', tokenFor(user), cookieOptions()).status(201).json({ user: { id: user.id, name: user.name, email: user.email } }); } catch (e) { if (e.code === 11000) return res.status(409).json({ error: 'An account with this email already exists.' }); next(e); } });
 app.post('/api/auth/login', authLimit, async (req, res, next) => { try { const { email, password } = z.object({ email: z.string().email(), password: z.string().min(1).max(128) }).parse(req.body); const user = await User.findOne({ email: email.toLowerCase() }); if (!user || !(await bcrypt.compare(password, user.passwordHash))) return res.status(401).json({ error: 'Email or password is incorrect.' }); res.cookie('vault_session', tokenFor(user), cookieOptions()).json({ user: { id: user.id, name: user.name, email: user.email } }); } catch (e) { next(e); } });
 app.post('/api/auth/logout', (_req, res) => res.clearCookie('vault_session', { ...cookieOptions(), maxAge: undefined }).json({ ok: true }));
 app.get('/api/auth/me', protect, (req, res) => res.json({ user: req.user }));
 app.get('/api/dashboard', protect, async (req, res, next) => { try { const ownerId = req.user._id; const live = { ownerId, deletedAt: null }; const [total, photos, videos, documents, favorites, recent, collections, bytes, refs] = await Promise.all([Asset.countDocuments(live), Asset.countDocuments({ ...live, resourceType: 'image' }), Asset.countDocuments({ ...live, resourceType: 'video' }), Asset.countDocuments({ ...live, resourceType: 'raw' }), Asset.countDocuments({ ...live, isFavorite: true }), Asset.find(live).sort({ createdAt: -1 }).limit(8).lean(), Collection.find({ ownerId }).sort({ createdAt: -1 }).limit(6).lean(), Asset.aggregate([{ $match: live }, { $group: { _id: null, total: { $sum: '$fileSize' } } }]), SocialReference.countDocuments({ ownerId })]); res.json({ stats: { total, photos, videos, documents, favorites, references: refs, bytes: bytes[0]?.total || 0 }, recent: recent.map(withPrivateUrl), collections }); } catch(e) { next(e); } });
 app.get('/api/assets', protect, async (req,res,next) => { try { const { q='', type='', favorite='', trash='', page='1', limit='40' }=req.query; const filter={ ownerId:req.user._id, deletedAt: trash === 'true' ? { $ne:null } : null }; if(type) filter.resourceType=type; if(favorite==='true') filter.isFavorite=true; if(q) filter.$text={ $search:String(q).slice(0,100) }; const safeLimit=Math.min(100,Math.max(1,Number(limit)||40)); const [items,total]=await Promise.all([Asset.find(filter).sort({createdAt:-1}).skip((Math.max(1,Number(page))-1)*safeLimit).limit(safeLimit).lean(),Asset.countDocuments(filter)]); res.json({items:items.map(withPrivateUrl),total,page:Number(page)||1}); } catch(e){next(e);} });
-app.post('/api/assets/upload', protect, uploadLimit, multer({ storage: multer.memoryStorage(), limits: { fileSize: 100 * 1024 * 1024, files: 8 }, fileFilter: (_req,file,cb) => { const ok=/^(image\/(jpeg|png|webp|gif)|video\/(mp4|webm|quicktime)|application\/pdf)$/.test(file.mimetype); cb(ok ? null : new Error('Allowed file types: JPG, PNG, WEBP, GIF, MP4, WEBM, MOV and PDF.'), ok); } }).array('files',8), async (req,res,next)=>{ try { if(!process.env.CLOUDINARY_URL) return res.status(503).json({error:'Cloud storage is not configured yet.'}); const saved=[]; for(const file of req.files||[]){ const resourceType=file.mimetype.startsWith('image/')?'image':file.mimetype.startsWith('video/')?'video':'raw'; const result=await new Promise((resolve,reject)=>{ const stream=cloudinary.uploader.upload_stream({resource_type:resourceType,folder:'loki-vault',type:'authenticated',filename_override:file.originalname,use_filename:false,unique_filename:true},(err,data)=>err?reject(err):resolve(data)); stream.end(file.buffer); }); const asset=await Asset.create({ownerId:req.user._id,title:file.originalname,originalFileName:file.originalname,resourceType,mimeType:file.mimetype,fileSize:file.size,cloudinaryPublicId:result.public_id,secureUrl:result.secure_url}); saved.push(asset); } res.status(201).json({items:saved.map(withPrivateUrl)}); } catch(e){next(e);} });
-app.patch('/api/assets/:id', protect, async(req,res,next)=>{try{const data=z.object({title:z.string().trim().max(200).optional(),description:z.string().max(2000).optional(),category:z.string().max(80).optional(),tags:z.array(z.string().max(40)).max(30).optional(),isFavorite:z.boolean().optional(),collectionId:z.string().nullable().optional()}).strict().parse(req.body); const item=await Asset.findOneAndUpdate({_id:req.params.id,ownerId:req.user._id},{$set:data},{new:true,runValidators:true}); if(!item)return res.status(404).json({error:'File not found.'});res.json({item});}catch(e){next(e);}});
+app.post('/api/assets/upload', protect, uploadLimit, multer({ storage: multer.memoryStorage(), limits: { fileSize: 100 * 1024 * 1024, files: 8 }, fileFilter: (_req,file,cb) => { const ok=/^(image\/(jpeg|png|webp|gif)|video\/(mp4|webm|quicktime)|application\/pdf)$/.test(file.mimetype); cb(ok ? null : new Error('Allowed file types: JPG, PNG, WEBP, GIF, MP4, WEBM, MOV and PDF.'), ok); } }).array('files',8), async (req,res,next)=>{ try { const files=req.files||[]; if(files.some(file=>!validUploadContent(file))) return res.status(400).json({error:'File contents do not match an allowed image, video or PDF type.'}); if(!process.env.CLOUDINARY_URL) return res.status(503).json({error:'Cloud storage is not configured yet.'}); const saved=[]; for(const file of files){ const resourceType=file.mimetype.startsWith('image/')?'image':file.mimetype.startsWith('video/')?'video':'raw'; const result=await new Promise((resolve,reject)=>{ const stream=cloudinary.uploader.upload_stream({resource_type:resourceType,folder:'loki-vault',type:'authenticated',filename_override:file.originalname,use_filename:false,unique_filename:true},(err,data)=>err?reject(err):resolve(data)); stream.end(file.buffer); }); const asset=await Asset.create({ownerId:req.user._id,title:file.originalname,originalFileName:file.originalname,resourceType,mimeType:file.mimetype,fileSize:file.size,cloudinaryPublicId:result.public_id,secureUrl:result.secure_url}); saved.push(asset); } res.status(201).json({items:saved.map(withPrivateUrl)}); } catch(e){next(e);} });
+app.patch('/api/assets/:id', protect, async(req,res,next)=>{try{const data=z.object({title:z.string().trim().max(200).optional(),description:z.string().max(2000).optional(),category:z.string().max(80).optional(),tags:z.array(z.string().max(40)).max(30).optional(),isFavorite:z.boolean().optional(),collectionId:z.string().nullable().optional()}).strict().parse(req.body);if(data.collectionId&&!mongoose.isValidObjectId(data.collectionId))return res.status(400).json({error:'Invalid collection.'});if(data.collectionId&&!await Collection.exists({_id:data.collectionId,ownerId:req.user._id}))return res.status(400).json({error:'Collection not found.'});const item=await Asset.findOneAndUpdate({_id:req.params.id,ownerId:req.user._id},{$set:data},{new:true,runValidators:true}); if(!item)return res.status(404).json({error:'File not found.'});res.json({item});}catch(e){next(e);}});
 app.delete('/api/assets/:id',protect,async(req,res,next)=>{try{const item=await Asset.findOneAndUpdate({_id:req.params.id,ownerId:req.user._id,deletedAt:null},{$set:{deletedAt:new Date()}},{new:true});if(!item)return res.status(404).json({error:'File not found.'});res.json({item});}catch(e){next(e);}});
 app.post('/api/assets/:id/restore',protect,async(req,res,next)=>{try{const item=await Asset.findOneAndUpdate({_id:req.params.id,ownerId:req.user._id,deletedAt:{$ne:null}},{$set:{deletedAt:null}},{new:true});if(!item)return res.status(404).json({error:'File not found in trash.'});res.json({item});}catch(e){next(e);}});
 app.get('/api/collections',protect,async(req,res,next)=>{try{res.json({items:await Collection.find({ownerId:req.user._id}).sort({name:1})});}catch(e){next(e);}});
