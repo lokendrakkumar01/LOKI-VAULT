@@ -35,6 +35,7 @@
 .photo-grid .asset-card{border-color:transparent;background:transparent;border-radius:7px}
 .photo-grid .asset-preview{aspect-ratio:1/1;height:auto;border-radius:7px}
 .asset-preview img,.photo-grid .asset-preview img{position:absolute;inset:0;display:block;width:100%;height:100%;object-fit:cover;transition:transform .2s}
+.asset-preview>.asset-video-thumb{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;background:#11131c}
 .asset-preview>.image-unavailable{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;background:linear-gradient(145deg,#1b1b28,#13141d);color:#838599;font-size:10px}
 .photo-grid .asset-card:hover .asset-preview img{transform:scale(1.035)}
 .photo-grid .asset-info{padding:6px 2px 3px}

@@ -54,7 +54,14 @@ const protect = async (req, res, next) => {
     return next();
   } catch (error) { return next(error); }
 };
-const withPrivateUrl = asset => { const item = asset.toObject ? asset.toObject() : { ...asset }; delete item.secureUrl; const ext = (item.originalFileName || '').split('.').pop()?.toLowerCase() || (item.resourceType === 'image' ? 'jpg' : item.resourceType === 'video' ? 'mp4' : 'pdf'); item.accessUrl = cloudinary.utils.private_download_url(item.cloudinaryPublicId, ext, { resource_type: item.resourceType, type: 'authenticated', expires_at: Math.floor(Date.now() / 1000) + 15 * 60 }); return item; };
+const assetExtension = asset => {
+  const namedExtension = asset.originalFileName?.match(/\.([a-zA-Z0-9]{1,10})$/)?.[1]?.toLowerCase();
+  if (namedExtension) return namedExtension;
+  const mimeExtension = asset.mimeType?.split('/')[1]?.toLowerCase();
+  if (mimeExtension) return mimeExtension === 'jpeg' ? 'jpg' : mimeExtension === 'quicktime' ? 'mov' : mimeExtension;
+  return asset.resourceType === 'image' ? 'jpg' : asset.resourceType === 'video' ? 'mp4' : 'pdf';
+};
+const withPrivateUrl = asset => { const item = asset.toObject ? asset.toObject() : { ...asset }; delete item.secureUrl; item.accessUrl = cloudinary.utils.private_download_url(item.cloudinaryPublicId, assetExtension(item), { resource_type: item.resourceType, type: 'authenticated', expires_at: Math.floor(Date.now() / 1000) + 15 * 60 }); return item; };
 app.get('/api/health', (_req, res) => res.json({ ok: true, database: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected' }));
 app.post('/api/assets/:id/download-ticket', protect, async (req, res, next) => {
   try {
@@ -73,7 +80,7 @@ app.get('/api/assets/:id/download', async (req, res, next) => {
     const asset = await Asset.findOne({ _id: req.params.id, ownerId: ticket.sub }).select('cloudinaryPublicId resourceType originalFileName mimeType');
     if (!asset) return res.status(404).json({ error: 'File not found.' });
     if (!process.env.CLOUDINARY_URL) return res.status(503).json({ error: 'Cloud storage is not configured yet.' });
-    const ext = asset.originalFileName?.match(/\.([a-zA-Z0-9]{1,10})$/)?.[1]?.toLowerCase() || 'bin';
+    const ext = assetExtension(asset);
     const downloadUrl = cloudinary.utils.private_download_url(asset.cloudinaryPublicId, ext, {
       resource_type: asset.resourceType,
       type: 'authenticated',
